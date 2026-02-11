@@ -2,81 +2,104 @@
 % Please edit documentation in R/fpi0est.R
 \name{fpi0est}
 \alias{fpi0est}
-\title{Estimate the functional proportion of null tests}
+\title{Estimate Functional Proportion of Null Tests}
 \usage{
 fpi0est(
   p,
-  z,
-  pi0_model,
+  pi0_model_obj = NULL,
+  z = NULL,
+  pi0_model = NULL,
   indep_snps = NULL,
-  lambda = seq(0.05, 0.9, 0.05),
-  method = "gam",
-  maxit = 1000,
-  pi0.method.control = NULL,
+  lambda = seq(0.05, 0.95, 0.05),
+  constrained.p = TRUE,
+  tol = 1e-09,
+  maxit = 200,
+  verbose = TRUE,
   ...
 )
 }
 \arguments{
-\item{p}{A vector of p-values.}
+\item{p}{Numeric vector of p-values.}
 
-\item{z}{A vector of informative variables}
+\item{pi0_model_obj}{Optional list object returned by \code{\link{pi0_model}}.
+Must contain \code{fmod} (formula) and \code{zt} (rank-transformed covariates).
+If provided, \code{z} and \code{pi0_model} are extracted automatically.
+Default is NULL.}
 
-\item{pi0_model}{Model formula corresponding to \code{z} for the functional proportion of truly null tests.}
+\item{z}{Optional data frame or matrix of rank-transformed covariates.
+Required if \code{pi0_model_obj} is not provided. Default is NULL.}
 
-\item{indep_snps}{A boolean vector (same size as p) specifying the set of independent tests. Default is NULL and all tests are treated independently.}
+\item{pi0_model}{Optional formula (as character string or formula object).
+Required if \code{pi0_model_obj} is not provided. Default is NULL.}
 
-\item{lambda}{A vector of values between [0,1] to estimate the functional proportion of truly null tests.}
+\item{indep_snps}{Optional logical vector indicating independent SNPs for
+model fitting. Default is NULL (all SNPs used).}
 
-\item{method}{Either the "gam" (generalized additive model) or "glm" (generalized linear models) approach. Default is "gam".}
+\item{lambda}{Numeric vector of lambda thresholds. Default is \code{seq(0.05, 0.95, 0.05)}.}
 
-\item{maxit}{The maximum number of iterations for "glm" approach. Default is 1000.}
+\item{constrained.p}{Logical; use constrained binomial family. Default is TRUE.}
 
-\item{pi0.method.control}{A user specified set of parameters for convergence for either "gam" or "glm". Default is NULL. See \code{\link[gam]{gam.control}} or \code{\link{glm.control}}.}
+\item{tol}{Numeric; convergence tolerance. Default is 1e-9.}
 
-\item{\ldots}{Additional arguments passed to \code{\link[gam]{gam}} or \code{\link{glm}}.}
+\item{maxit}{Integer; maximum iterations. Default is 200.}
+
+\item{verbose}{Logical; print progress messages. Default is TRUE.}
+
+\item{...}{Additional arguments passed to \code{\link[fastglm]{fastglm}}.}
 }
 \value{
-A list of object type "fpi0" containing:
-\item{fpi0}{A table containing the functional proportion of truly null tests.}
-\item{tableLambda}{Functional proportion of null tests at the lambda values}
-\item{MISE}{MISE values.}
-\item{lambda.hat}{The chosen lambda value.}
+An object of class \code{fpi0} (a list) containing:
+\describe{
+  \item{fpi0}{Numeric vector of functional pi0 estimates for each test.}
+  \item{tableLambda}{A data frame summarizing results for each lambda value.}
+  \item{MISE}{The Mean Integrated Squared Error (MISE) for the chosen model.}
+  \item{lambda}{The selected optimal lambda value.}
+}
 }
 \description{
-he function \code{\link{fpi0est}} estimates the functional proportion of null tests given
-a set of informative variables.
+Estimates the functional proportion of null tests (pi0) using a GLM approach
+with a constrained binomial family. This function fits models across multiple
+lambda thresholds and selects the optimal estimate via MISE minimization.
 }
 \details{
-This code extends the function from the fFDR package to handle
-multiple informative variables and linkage disequilibrium.
+\strong{Algorithm:}
+
+\enumerate{
+  \item For each lambda threshold, fit a binomial GLM: \eqn{P(p \ge \lambda | z)}
+  \item Use constrained binomial family to ensure predictions in (0, 1)
+  \item Select optimal lambda via MISE minimization
+}
+
+\strong{Usage Patterns:}
+
+\strong{Pattern 1 (Recommended):} Use output from \code{\link{pi0_model}}
+\preformatted{
+  mpi0 <- pi0_model(z)
+  # Clean syntax:
+  fpi0_out <- fpi0est(p, mpi0)
+}
+
+\strong{Pattern 2:} Manually specify formula and covariates
+\preformatted{
+  fpi0_out <- fpi0est(p, z = z_matrix, pi0_model = formula_obj)
+}
 }
 \examples{
-\donttest{
-# import data
+# Import data
 data(bmi)
 
-# separate main p-values and conditioning p-values
+# Separate main p-values and conditioning p-values
 p <- sumstats$bmi
 z <- as.matrix(sumstats[, -1])
 
-# apply pi0_model to create model
-knots <- c(0.005, 0.01, 0.025, 0.05, 0.1)
-fmod <- pi0_model(z, knots = knots)
+# Apply pi0_model to create model (uses adaptive knot selection)
+fmod <- pi0_model(z)
 
 # Estimate functional pi0
-fpi0_out <- fpi0est(p, z = fmod$zt, pi0_model = fmod$fmod)
+fpi0_out <- fpi0est(p, fmod)
 fpi0 <- fpi0_out$fpi0
 
-# See relationship of BFP/cholesterol/triglycerides and fpi0
-plot(fmod$zt$bfp, fpi0)
-plot(fmod$zt$cholesterol, fpi0)
-plot(fmod$zt$triglycerides, fpi0)
+# Apply sffdr
+sffdr_out <- sffdr(p, fpi0)
+
 }
-}
-\seealso{
-\code{\link{sffdr}}, \code{\link{plot.sffdr}}
-}
-\author{
-Andrew J. Bass, David G. Robinson (author of original function)
-}
-\keyword{fpi0est}
