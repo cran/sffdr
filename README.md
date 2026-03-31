@@ -139,14 +139,46 @@ pruned set of SNPs as the independent set, or (2) use informed sampling
 of the informative traits (e.g., clumping or based on LD blocks). The
 latter is likely better when the primary study has low power.
 
+
 ## Advanced usage
+
+### Enforcing monotonicity
+
+The kernel density estimator is adaptive. However, sometimes  artifacts---such as LD---can induce spurious "bumps" in the null region which can impact density estimation.
+
+You can enforce a monotone constraint within surrogate bins (targeting ~1,000 independent SNPs per bin) to stabilize the joint density:
+
+``` r
+sffdr_out <- sffdr(p, fpi0 = fpi0$fpi0, monotone = TRUE)
+```
+
+While this provides robustness in the null region, users should note it may result in a loss of power in specific cases. We are considering making this the default behavior in future releases, but for now it is optional.
+
+### Incorporating LD scores
+
+If LD scores ($l_{j}$​) are available (e.g., from LDSC regression), they can be utilized as inverse-weights ($w_j​=1/l_{j}$​). This allows the estimators to account for LD directly while allowing the full dataset to be used. As such, pre-filtering for independent SNPs (i.e., pruning) is unnecessary.
+
+Below we show how to incorporate weights into sfFDR:
+``` r
+# Create an artificial LD block
+LD_block <- 500:1000
+p[LD_block] <- runif(length(LD_block), min = 0.78, max = 0.82)
+
+# Define weights (inverse LD)
+w <- rep(1.0, length(p))
+w[LD_block] <- 0.05
+
+# Apply sfFDR with weights
+mpi0 <- pi0_model(z, weights = w)
+fpi0 <- fpi0est(p, mpi0, weights = w)
+sffdr_out <- sffdr(p, fpi0 = fpi0$fpi0, weights = w)
+```
+
+  **Note on incorporating LD scores**: As LD scores are available for common reference panels (e.g., 1000 Genomes), they can be easily downloaded to use in sfFDR. If you have LD scores calculated from your data then that's even better. However, it is problematic to use LD scores when the reference panel is not matched to your study population. In that case, the pruning (or informative sampling) strategy discussed above is the best option.
 
 ### Manual Knot Selection and using other informative variables
 
-The selection of knots in the B-spline basis is an important tuning
-parameter in sffdr. If your surrogate GWAS has extremely high power
-(very small p-values), we recommend placing more knots at the lower end
-of the p-value distribution to capture the local density of signals.
+The selection of knots in the B-spline basis is an important tuning parameter in sffdr. If your surrogate GWAS has extremely high power (very small p-values), we recommend placing more knots at the lower end of the p-value distribution to capture the local density of signals.
 
 ``` r
 # Create model (can include other variables (e.g., MAF) or specify more complicated models)
@@ -154,10 +186,6 @@ fmod <- "~ns(bfp, knots = c(0.01, 0.025, 0.05, 0.1))"
 fpi0_mod <- fpi0est(p = p,
                     z = mpi0$zt,
                     pi0_model = fmod)
-```
+``` 
 
-**Note on incorporating additional variables**: Other informative
-covariates can be included in the model (e.g., MAF, LD score, etc.).
-While the LD score annotations can be used (e.g., the baselineLD model),
-we have found that using the expected $\chi^{2}$ given the annotations
-performs better in practice and simplifies the model fitting.
+  **Note on incorporating additional variables**: Other informative covariates can be included in the model (e.g., MAF, LD score, etc.). While the LD score annotations can be used (e.g., the baselineLD model), we have found that using the expected $\chi^{2}$ given the annotations performs better in practice and simplifies the model fitting.

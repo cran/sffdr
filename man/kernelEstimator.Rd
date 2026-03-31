@@ -7,7 +7,7 @@
 kernelEstimator(
   x,
   eval.points = x,
-  epsilon = 1e-15,
+  epsilon = .Machine$double.xmin,
   epsilon.max = 1 - 1e-04,
   maxk = 5e+05,
   maxit = 200,
@@ -15,21 +15,23 @@ kernelEstimator(
   trim = 0,
   nn = NULL,
   tail_threshold = -2,
+  weights = NULL,
+  verbose = TRUE,
   ...
 )
 }
 \arguments{
-\item{x}{Numeric vector of p-values (for 1D density) or a 2-column matrix where
-the first column contains p-values and the second column contains an informative
-covariate/surrogate. All p-values must be in (0, 1) and the covariate/surrogate must
-be rank-transformed to be (0,1].}
+\item{x}{Numeric vector of p-values (for 1D density) or a  2-column matrix
+where the first column contains an informative covariate/surrogate and the
+second column contains the p-values. All p-values must be in (0, 1) and the
+covariate/surrogate must be rank-transformed to be (0,1].}
 
 \item{eval.points}{Points at which to evaluate the density estimate. Defaults to
 \code{x}. For custom evaluation points, must match the dimensionality of \code{x}
 (vector or 2-column matrix).}
 
 \item{epsilon}{Lower bound for p-values to prevent numerical issues. P-values
-below this are clamped to \code{epsilon}. Default: \code{1e-15}.}
+below this are clamped to \code{epsilon}. Default: \code{.Machine$double.xmin}.}
 
 \item{epsilon.max}{Upper bound for p-values. P-values above this are clamped to
 \code{epsilon.max}. Default: \code{1 - 1e-4}.}
@@ -38,16 +40,17 @@ below this are clamped to \code{epsilon}. Default: \code{1e-15}.}
 Increase for very large datasets. Default: \code{500000}.}
 
 \item{maxit}{Maximum number of iterations for local regression fitting. Default:
-\code{2000}.}
+\code{200}.}
 
 \item{target_null}{Maximum number of null SNPs to include in the weighted fit
 (bivariate case only). SNPs in the signal-enriched tail (defined by
 \code{tail_threshold}) are always retained; null SNPs are downsampled to this
 target and upweighted accordingly. Default: \code{100000}.}
 
-\item{trim}{For 1D estimation, fixes the density estimate to constant values on
-the intervals \code{(0, trim)} and \code{(1 - trim, 1)} to reduce boundary
-variance. Default: \code{0} (no trimming).}
+\item{trim}{Numeric in [0, 1); if > 0, flattens the density for p-values
+in (1 - trim, 1) to reduce boundary artifacts from p-values artificially
+clumped near 1. Only applies to the p-value dimension. Default is 0
+(no trimming).}
 
 \item{nn}{Nearest-neighbor bandwidth parameter for \code{\link[locfit]{locfit}},
 expressed as a fraction of the data. If \code{NULL} (default), automatically
@@ -58,6 +61,10 @@ determined based on effective sample size to span approximately 5000 neighbors
 (bivariate case only). SNPs with z < \code{tail_threshold} are treated as
 signal-enriched and prioritized in the adaptive fit. Default: \code{-2}
 (approximately 2.3\% of standard normal distribution).}
+
+\item{weights}{Optional numeric vector of weights for density estimation. For GWAS data, this should be inverse LD scores.}
+
+\item{verbose}{Logical; whether to print progress messages during fitting. Default is TRUE.}
 
 \item{...}{Additional arguments passed to \code{\link[locfit]{lp}} for controlling
 local polynomial fitting (e.g., \code{deg}, \code{kern}).}

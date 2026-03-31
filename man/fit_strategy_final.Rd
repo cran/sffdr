@@ -9,9 +9,10 @@ fit_strategy_final(
   valid_data,
   nn_high,
   nn_safe,
+  h_safe,
   maxit,
   maxk,
-  verbose = TRUE,
+  verbose,
   ...
 )
 }

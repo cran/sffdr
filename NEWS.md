@@ -1,5 +1,15 @@
 # sffdr (development version)
 
+# sffdr 1.1.2
+
+* Added monotonicity option (running min or PAVA)
+* Better handling of weights in kernel density estimation
+* function docorrelate_informative to handle overlapping samples
+
+# sffdr 1.1.1
+
+* Added a weights argument which allows users to input inverse LD scores and fit to all SNPs.
+
 # sffdr 1.1.0
 
 ## Major Changes

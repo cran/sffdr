@@ -8,8 +8,11 @@ sffdr(
   p.value,
   fpi0,
   surrogate = NULL,
+  weights = NULL,
   epsilon = .Machine$double.xmin,
   nn = NULL,
+  monotone = TRUE,
+  monotone_method = c("min", "pava"),
   fp_ties = TRUE,
   seed = 2026,
   verbose = TRUE,
@@ -26,11 +29,18 @@ from \code{\link{fpi0est}}. Values must be in [0, 1].}
 as a surrogate variable for compression. If NULL (default), uses
 \code{fpi0} as the surrogate.}
 
+\item{weights}{Optional numeric vector of weights for density estimation. For GWAS data, this should be inverse LD scores.}
+
 \item{epsilon}{Numeric; lower bound for p-value clamping during density estimation.
 Default is \code{.Machine$double.xmin}.}
 
 \item{nn}{Numeric; nearest-neighbor bandwidth for \code{\link{kernelEstimator}}.
 If NULL (default), automatically selected as ~5000 neighbors.}
+
+\item{monotone}{Logical; if TRUE, enforces monotonicity of the estimated density with respect to p-values within bins of the surrogate variable. Default is TRUE.}
+
+\item{monotone_method}{Character; method for enforcing monotonicity. Options are "min" (running minimum) or "pava" (Pool Adjacent Violators Algorithm). Default is "min".
+We do not recommend "pava" for GWAS data sets due to LD, but it may be better for expression data.}
 
 \item{fp_ties}{Logical; whether to break ties in functional p-values using the
 original p-value ordering. Default is TRUE.}
@@ -75,8 +85,17 @@ Workflow:
 
 Surrogate Variable:
 If not specified, the estimated functional pi0 is used as the surrogate variable.
+
+Interpretation note: Functional p-values reflect the global ranking of all
+SNPs by the functional local FDR. A SNP with a small functional p-value but
+large flfdr (> 0.5) has weak individual evidence but ranks favorably
+relative to null SNPs. This happens when there is strong prior evidence (fpi0) of the SNP
+being non-null. Thus, users should also consider flfdr (and fqvalues) alongside fpvalues
+when assessing individual SNP evidence. SNPs with flfdr > 0.5 should
+be interpreted cautiously regardless of their functional p-value.
 }
 \examples{
+\dontrun{
 # Import data
 data(bmi)
 
@@ -103,6 +122,7 @@ plot(sffdr_out)
 fp <- sffdr_out$fpvalues
 fq <- sffdr_out$fqvalues
 flfdr <- sffdr_out$flfdr
+}
 
 }
 \seealso{

@@ -24,16 +24,28 @@
 #' Surrogate Variable:
 #' If not specified, the estimated functional pi0 is used as the surrogate variable.
 #'
+#' Interpretation note: Functional p-values reflect the global ranking of all
+#' SNPs by the functional local FDR. A SNP with a small functional p-value but
+#' large flfdr (> 0.5) has weak individual evidence but ranks favorably
+#' relative to null SNPs. This happens when there is strong prior evidence (fpi0) of the SNP
+#' being non-null. Thus, users should also consider flfdr (and fqvalues) alongside fpvalues
+#' when assessing individual SNP evidence. SNPs with flfdr > 0.5 should
+#' be interpreted cautiously regardless of their functional p-value.
+#'
 #' @param p.value Numeric vector of p-values to analyze.
 #' @param fpi0 Numeric vector of functional pi0 estimates, obtained
 #'   from \code{\link{fpi0est}}. Values must be in [0, 1].
 #' @param surrogate Optional numeric vector (same length as \code{p.value}) used
 #'   as a surrogate variable for compression. If NULL (default), uses
 #'   \code{fpi0} as the surrogate.
+#' @param weights Optional numeric vector of weights for density estimation. For GWAS data, this should be inverse LD scores.
 #' @param epsilon Numeric; lower bound for p-value clamping during density estimation.
 #'   Default is \code{.Machine$double.xmin}.
 #' @param nn Numeric; nearest-neighbor bandwidth for \code{\link{kernelEstimator}}.
 #'   If NULL (default), automatically selected as ~5000 neighbors.
+#' @param monotone Logical; if TRUE, enforces monotonicity of the estimated density with respect to p-values within bins of the surrogate variable. Default is TRUE.
+#' @param monotone_method Character; method for enforcing monotonicity. Options are "min" (running minimum) or "pava" (Pool Adjacent Violators Algorithm). Default is "min".
+#'   We do not recommend "pava" for GWAS data sets due to LD, but it may be better for expression data.
 #' @param fp_ties Logical; whether to break ties in functional p-values using the
 #'   original p-value ordering. Default is TRUE.
 #' @param seed Integer; random seed for reproducibility of rank tie-breaking.
@@ -52,6 +64,7 @@
 #' \item{fx}{Joint density estimates at observed (p-value, surrogate) pairs.}
 #'
 #' @examples
+#' \dontrun{
 #' # Import data
 #' data(bmi)
 #'
@@ -78,6 +91,7 @@
 #' fp <- sffdr_out$fpvalues
 #' fq <- sffdr_out$fqvalues
 #' flfdr <- sffdr_out$flfdr
+#' }
 #'
 #' @author Andrew J. Bass
 #' @seealso \code{\link{fpi0est}}, \code{\link{plot.sffdr}}, \code{\link{kernelEstimator}}
@@ -88,8 +102,11 @@ sffdr <- function(
   p.value,
   fpi0,
   surrogate = NULL,
+  weights = NULL,
   epsilon = .Machine$double.xmin,
   nn = NULL,
+  monotone = TRUE,
+  monotone_method = c("min", "pava"),
   fp_ties = TRUE,
   seed = 2026,
   verbose = TRUE,
@@ -111,6 +128,7 @@ sffdr <- function(
 
   # Input validation
   n <- length(p.value)
+  monotone_method <- match.arg(monotone_method, c("min", "pava"))
 
   if (!is.numeric(p.value)) {
     stop("'p.value' must be a numeric vector.")
@@ -156,6 +174,22 @@ sffdr <- function(
   fpi0_valid <- fpi0[valid]
   n_valid <- sum(valid)
 
+  # Handle inverse LD weights for density estimation
+  w_valid <- if (!is.null(weights)) weights[valid] else NULL
+
+  if (!is.null(w_valid)) {
+    w_valid <- pmin(pmax(w_valid, 1e-6), 1.0)
+  }
+
+  has_weights <- !is.null(w_valid) && !all(is.na(w_valid))
+
+  if (has_weights && any(is.na(w_valid)) && verbose) {
+    message(sprintf(
+      "  Note: Weights missing for %.1f%% of SNPs. Training map on weighted subset...",
+      100 * mean(is.na(w_valid))
+    ))
+  }
+
   # Set surrogate variable
   if (verbose) {
     message("  Transforming surrogate variable...")
@@ -171,25 +205,97 @@ sffdr <- function(
     message("  Fitting kernel density...")
   }
 
-  kd <- kernelEstimator(
-    x = cbind(z, p_valid),
-    eval.points = cbind(z, p_valid),
-    nn = nn,
-    epsilon = epsilon,
-    ...
-  )
+  if (has_weights) {
+    # Weighted density estimation
+    train_idx <- !is.na(w_valid)
+    kd <- kernelEstimator(
+      x = cbind(z[train_idx], p_valid[train_idx]),
+      eval.points = cbind(z, p_valid), # Predict for ALL valid SNPs
+      nn = nn,
+      epsilon = epsilon,
+      weights = w_valid[train_idx],
+      verbose = verbose,
+      ...
+    )
 
-  fx_valid <- kd$fx
+    # Marginal density of Z (1D weighted correction)
+    fx_uni <- kernelEstimator(
+      x = z[train_idx],
+      eval.points = z,
+      nn = nn,
+      epsilon = epsilon,
+      weights = w_valid[train_idx],
+      verbose = verbose,
+      ...
+    )
 
-  # Guard against zero or negative density
-  fx_valid <- pmax(fx_valid, .Machine$double.xmin)
+    fx_valid <- pmax(kd$fx, .Machine$double.xmin)
+    marginal_fz <- pmax(fx_uni$fx, .Machine$double.xmin)
+  } else {
+    # Unweighted density estimation
+    kd <- kernelEstimator(
+      x = cbind(z, p_valid),
+      eval.points = cbind(z, p_valid),
+      nn = nn,
+      epsilon = epsilon,
+      weights = NULL,
+      verbose = verbose,
+      ...
+    )
+    fx_valid <- pmax(kd$fx, .Machine$double.xmin)
+    marginal_fz <- 1
+  }
+
+  if (monotone) {
+    if (verbose) {
+      msg <- sprintf(
+        "  Enforcing conditional monotonicity using the '%s' method...",
+        monotone_method
+      )
+      message(msg)
+    }
+
+    # Calculate Effective N (accounting for LD weights)
+    eff_n <- if (!is.null(weights)) sum(w_valid, na.rm = TRUE) else n_valid
+
+    # Target ~1,000 independent SNPs per bin
+    n_bins <- as.integer(max(10, min(1000, floor(eff_n / 1000))))
+
+    if (verbose) {
+      message(sprintf(
+        "    Dividing data into %d conditional surrogate bins...",
+        n_bins
+      ))
+    }
+
+    groups <- as.integer(cut(z, breaks = n_bins, labels = FALSE))
+    ord <- order(groups, p_valid)
+
+    # Route to the appropriate C++ engine based on user choice
+    if (monotone_method == "min") {
+      smoothed_fx <- monoSmooth_conditional(
+        pvalue = p_valid[ord],
+        density = fx_valid[ord],
+        group = groups[ord]
+      )
+    } else {
+      smoothed_fx <- monoSmooth_pava(
+        pvalue = p_valid[ord],
+        density = fx_valid[ord],
+        group = groups[ord]
+      )
+    }
+
+    # Invert the order to map back to valid subset
+    fx_valid[ord] <- smoothed_fx
+  }
 
   # Compute functional local FDR
   if (verbose) {
     message("  Computing functional local FDRs...")
   }
 
-  lfdr_valid <- pmin(fpi0_valid / fx_valid, 1)
+  lfdr_valid <- pmin(fpi0_valid * marginal_fz / fx_valid, 1)
 
   # Compute functional p-values and q-values
   if (verbose) {
@@ -237,4 +343,6 @@ sffdr <- function(
 #' @importFrom qvalue qvalue pi0est
 #' @importFrom locfit locfit lp rbox
 #' @importFrom splines ns
+#' @useDynLib sffdr, .registration = TRUE
+#' @importFrom Rcpp sourceCpp
 NULL

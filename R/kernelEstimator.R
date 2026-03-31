@@ -6,17 +6,17 @@
 #' uses adaptive downsampling to prioritize signal-rich regions while maintaining
 #' computational efficiency.
 #'
-#' @param x Numeric vector of p-values (for 1D density) or a 2-column matrix where
-#'   the first column contains p-values and the second column contains an informative
-#'   covariate/surrogate. All p-values must be in (0, 1) and the covariate/surrogate must
-#'   be rank-transformed to be (0,1].
+#' @param x Numeric vector of p-values (for 1D density) or a  2-column matrix
+#'   where the first column contains an informative covariate/surrogate and the
+#'   second column contains the p-values. All p-values must be in (0, 1) and the
+#'   covariate/surrogate must be rank-transformed to be (0,1].
 #'
 #' @param eval.points Points at which to evaluate the density estimate. Defaults to
 #'   \code{x}. For custom evaluation points, must match the dimensionality of \code{x}
 #'   (vector or 2-column matrix).
 #'
 #' @param epsilon Lower bound for p-values to prevent numerical issues. P-values
-#'   below this are clamped to \code{epsilon}. Default: \code{1e-15}.
+#'   below this are clamped to \code{epsilon}. Default: \code{.Machine$double.xmin}.
 #'
 #' @param epsilon.max Upper bound for p-values. P-values above this are clamped to
 #'   \code{epsilon.max}. Default: \code{1 - 1e-4}.
@@ -25,16 +25,17 @@
 #'   Increase for very large datasets. Default: \code{500000}.
 #'
 #' @param maxit Maximum number of iterations for local regression fitting. Default:
-#'   \code{2000}.
+#'   \code{200}.
 #'
 #' @param target_null Maximum number of null SNPs to include in the weighted fit
 #'   (bivariate case only). SNPs in the signal-enriched tail (defined by
 #'   \code{tail_threshold}) are always retained; null SNPs are downsampled to this
 #'   target and upweighted accordingly. Default: \code{100000}.
 #'
-#' @param trim For 1D estimation, fixes the density estimate to constant values on
-#'   the intervals \code{(0, trim)} and \code{(1 - trim, 1)} to reduce boundary
-#'   variance. Default: \code{0} (no trimming).
+#' @param trim Numeric in [0, 1); if > 0, flattens the density for p-values
+#'   in (1 - trim, 1) to reduce boundary artifacts from p-values artificially
+#'   clumped near 1. Only applies to the p-value dimension. Default is 0
+#'   (no trimming).
 #'
 #' @param nn Nearest-neighbor bandwidth parameter for \code{\link[locfit]{locfit}},
 #'   expressed as a fraction of the data. If \code{NULL} (default), automatically
@@ -46,6 +47,8 @@
 #'   signal-enriched and prioritized in the adaptive fit. Default: \code{-2}
 #'   (approximately 2.3\% of standard normal distribution).
 #'
+#' @param weights Optional numeric vector of weights for density estimation. For GWAS data, this should be inverse LD scores.
+#' @param verbose Logical; whether to print progress messages during fitting. Default is TRUE.
 #' @param ... Additional arguments passed to \code{\link[locfit]{lp}} for controlling
 #'   local polynomial fitting (e.g., \code{deg}, \code{kern}).
 #'
@@ -104,7 +107,7 @@
 kernelEstimator <- function(
   x,
   eval.points = x,
-  epsilon = 1e-15,
+  epsilon = .Machine$double.xmin,
   epsilon.max = 1 - 1e-4,
   maxk = 500000,
   maxit = 200,
@@ -112,6 +115,8 @@ kernelEstimator <- function(
   trim = 0,
   nn = NULL,
   tail_threshold = -2,
+  weights = NULL,
+  verbose = TRUE,
   ...
 ) {
   # Input validation
@@ -132,7 +137,11 @@ kernelEstimator <- function(
     clamp_and_transform(eval.points)
   }
 
-  # Add jitter to break ties and improve convergence
+  if (!is.null(weights)) {
+    weights <- pmin(pmax(weights, 1e-6), 1.0)
+  }
+
+  # Add jitter to Z-scores to prevent matrix singularities
   jitter_mag <- 1e-6
   if (is_matrix) {
     train_s[, 2] <- train_s[, 2] + runif(nrow(train_s), -jitter_mag, jitter_mag)
@@ -149,6 +158,8 @@ kernelEstimator <- function(
       nn = nn,
       maxit = maxit,
       maxk = maxk,
+      weights = weights,
+      verbose = verbose,
       ...
     )
   } else {
@@ -157,6 +168,7 @@ kernelEstimator <- function(
       nn = nn,
       maxit = maxit,
       maxk = maxk,
+      weights = weights,
       ...
     )
   }
@@ -169,16 +181,18 @@ kernelEstimator <- function(
   newdata <- if (is.matrix(eval_s)) {
     data.frame(V1 = eval_s[, 1], V2 = eval_s[, 2])
   } else {
-    eval_s
+    data.frame(train_s = eval_s)
   }
   fs_hat <- predict(lfit, newdata = newdata, log = FALSE)
 
   # Jacobian correction to transform back to original scale
   corrector <- if (is.matrix(eval_s)) {
-    dnorm(eval_s[, 1]) * dnorm(eval_s[, 2])
+    log_corr <- dnorm(eval_s[, 1], log = TRUE) + dnorm(eval_s[, 2], log = TRUE)
+    exp(log_corr)
   } else {
-    dnorm(eval_s)
+    exp(dnorm(eval_s, log = TRUE))
   }
+
   fx_hat <- fs_hat / pmax(corrector, .Machine$double.xmin)
 
   # Build result data frame
@@ -189,18 +203,27 @@ kernelEstimator <- function(
     fs = fs_hat
   )
 
-  # Apply boundary trimming for 1D case
-  if (trim > 0 && !is_matrix) {
-    val_lower <- res$fx[which.min(abs(res$x - trim))]
-    val_upper <- res$fx[which.min(abs(res$x - (1 - trim)))]
-    res$fx[res$x < trim] <- val_lower
-    res$fx[res$x > (1 - trim)] <- val_upper
+  # Apply boundary trimming for 2D case (just upper)
+  if (trim > 0 && is_matrix) {
+    boundary_idx <- eval.points[, 2] > (1 - trim)
+
+    if (any(boundary_idx)) {
+      safe_eval_s <- eval_s[boundary_idx, , drop = FALSE]
+
+      safe_eval_s[, 2] <- qnorm(1 - trim)
+
+      safe_newdata <- data.frame(V1 = safe_eval_s[, 1], V2 = safe_eval_s[, 2])
+      safe_fs_hat <- predict(lfit, newdata = safe_newdata, log = FALSE)
+
+      safe_corrector <- dnorm(safe_eval_s[, 1]) * dnorm(safe_eval_s[, 2])
+      res$fx[boundary_idx] <- safe_fs_hat /
+        pmax(safe_corrector, .Machine$double.xmin)
+    }
   }
 
   attr(res, "lfit") <- lfit
   res
 }
-
 
 #' Fit Bivariate Density with Adaptive Downsampling
 #'
@@ -212,6 +235,8 @@ kernelEstimator <- function(
 #' @param nn Nearest-neighbor bandwidth (NULL for automatic).
 #' @param maxit Maximum iterations for locfit.
 #' @param maxk Maximum fitting points for locfit.
+#' @param weights Optional numeric vector of weights for density estimation.
+#' @param verbose Logical; whether to print progress messages during fitting.
 #' @param ... Additional arguments for lp().
 #'
 #' @return Fitted locfit object or NULL.
@@ -223,66 +248,68 @@ fit_bivariate_density <- function(
   nn,
   maxit,
   maxk,
+  weights = NULL,
+  verbose = TRUE,
   ...
 ) {
-  # Identify signal vs null regions based on covariate
-  z <- train_s[, 2]
-  idx_tail <- which(z < tail_threshold)
+  if (is.null(weights)) {
+    weights <- rep(1.0, nrow(train_s))
+  }
+
+  # 2. Identify Signal vs Null — filter on matrix before data.frame construction
+  z_col <- train_s[, 2]
+  is_tail <- z_col < tail_threshold
+  idx_tail <- which(is_tail)
   n_tail <- length(idx_tail)
 
   if (n_tail == 0) {
-    stop(
-      "No signal points (z < tail_threshold) found. ",
-      "Consider adjusting tail_threshold."
-    )
+    stop("No signal points found. Consider adjusting tail_threshold.")
   }
 
-  # Adaptive downsampling of null region
   n_total <- nrow(train_s)
   n_null <- n_total - n_tail
 
+  # 3. Downsample and Multiply Weights
   if (n_null > target_null) {
-    # Downsample null, keep all signal
-    idx_null <- which(z >= tail_threshold)
+    idx_null <- which(!is_tail)
     idx_keep <- sample(idx_null, target_null)
     idx_final <- c(idx_tail, idx_keep)
-
-    # Weight to account for downsampling
-    w_null <- n_null / target_null # each retained null represents this many
-    w_vec <- c(rep(1.0, n_tail), rep(w_null, target_null))
+    w_null <- n_null / target_null
+    w_vec <- c(weights[idx_tail], weights[idx_keep] * w_null)
   } else {
-    # Keep all data
     idx_final <- seq_len(n_total)
-    w_vec <- rep(1.0, n_total)
+    w_vec <- weights
   }
 
-  # Prepare fitting data
-  fit_data <- data.frame(
-    V1 = train_s[idx_final, 1],
-    V2 = train_s[idx_final, 2],
-    w = w_vec
-  )
+  # 4. Construct data.frame from pre-filtered matrix rows
+  mat_final <- train_s[idx_final, , drop = FALSE]
+  fit_data <- data.frame(V1 = mat_final[, 1], V2 = mat_final[, 2], w = w_vec)
 
-  # Validation data focuses on signal region
-  valid_data <- fit_data[seq_len(n_tail), , drop = FALSE]
+  # valid_data: tail rows only — filter on numeric vector, not data.frame column
+  is_tail_final <- mat_final[, 2] < tail_threshold
+  valid_data <- fit_data[is_tail_final, , drop = FALSE]
 
-  # Automatic nn selection targeting ~5000 neighbors
-  n_eff <- nrow(fit_data)
+  # 5. Adaptive Bandwidth Selection
+  n_eff <- sum(fit_data$w)
   if (!is.null(nn)) {
     nn_high <- nn_safe <- nn
   } else {
-    nn_high <- max(0.005, min(0.1, 5000 / n_eff))
-    nn_safe <- max(0.010, min(0.1, 5000 / n_eff))
+    nn_high <- max(0.005, min(0.05, 5000 / n_eff))
+    nn_safe <- max(0.010, min(0.05, 5000 / n_eff))
   }
 
-  # Try cascade of fitting strategies
+  h_safe <- max(0.05, 0.5 * (n_eff^(-1 / 6)))
+
+  # 6. Fit Models
   fit_strategy_final(
     data = fit_data,
     valid_data = valid_data,
     nn_high = nn_high,
     nn_safe = nn_safe,
+    h_safe = h_safe,
     maxit = maxit,
     maxk = maxk,
+    verbose = verbose,
     ...
   )
 }
@@ -300,14 +327,37 @@ fit_bivariate_density <- function(
 #'
 #' @return Fitted locfit object.
 #' @keywords internal
-fit_univariate_density <- function(train_s, nn, maxit, maxk, ...) {
-  n_eff <- length(train_s)
+fit_univariate_density <- function(
+  train_s,
+  nn,
+  maxit,
+  maxk,
+  weights = NULL,
+  ...
+) {
+  if (is.null(weights)) {
+    weights <- rep(1.0, length(train_s))
+  }
+
+  fit_data <- data.frame(train_s = train_s, w = weights)
+
+  n_eff <- sum(fit_data$w)
+
   nn_base <- if (!is.null(nn)) {
     nn
   } else {
-    max(0.01, min(0.1, 10000 / n_eff))
+    max(0.01, min(.05, 5000 / n_eff))
   }
-  locfit(~ lp(train_s, nn = nn_base, ...), maxk = maxk, maxit = maxit)
+
+  h_safe <- max(0.05, 0.5 * (n_eff^(-1 / 6)))
+
+  locfit(
+    ~ lp(train_s, nn = nn_base, h = h_safe, ...),
+    data = fit_data,
+    weights = fit_data$w,
+    maxk = maxk,
+    maxit = maxit
+  )
 }
 
 #' Fit locfit with Multiple Fallback Strategies
@@ -331,9 +381,10 @@ fit_strategy_final <- function(
   valid_data,
   nn_high,
   nn_safe,
+  h_safe,
   maxit,
   maxk,
-  verbose = TRUE,
+  verbose,
   ...
 ) {
   # Subset for validation checks
@@ -343,7 +394,7 @@ fit_strategy_final <- function(
     data[seq_len(min(100, nrow(data))), ]
   }
 
-  # Validation function: check predictions are valid
+  # Check predictions are valid
   validate <- function(mod) {
     if (is.null(mod)) {
       return(FALSE)
@@ -357,43 +408,56 @@ fit_strategy_final <- function(
     p_lin <- exp(p_log)
     all(p_lin > 0)
   }
+  # Compute rbox() once and share across all strategies
+  ev_box <- rbox()
 
-  # Define fitting strategies in order of preference
   strats <- list(
     list(
       name = "High-Res Tcub",
       deg = 2,
       kern = "tcub",
-      ev = rbox(),
-      nn = nn_high
+      ev = ev_box,
+      nn = nn_high,
+      h = h_safe
     ),
     list(
       name = "High-Res Gauss",
       deg = 2,
       kern = "gauss",
-      ev = rbox(),
-      nn = nn_high
+      ev = ev_box,
+      nn = nn_high,
+      h = h_safe
     ),
     list(
       name = "Safe Tcub",
       deg = 2,
       kern = "tcub",
-      ev = rbox(),
-      nn = nn_safe
+      ev = ev_box,
+      nn = nn_safe,
+      h = 2 * h_safe
     ),
     list(
       name = "Linear Tree",
       deg = 1,
       kern = "tcub",
-      ev = rbox(),
-      nn = 2 * nn_safe
+      ev = ev_box,
+      nn = 2 * nn_safe,
+      h = 2 * h_safe
     )
   )
 
-  # Try each strategy
   for (s in strats) {
     if (verbose) {
-      message("    ", s$name, " (nn=", round(s$nn, 5), ")...", appendLF = FALSE)
+      message(
+        "    ",
+        s$name,
+        " (nn=",
+        round(s$nn, 5),
+        ", h=",
+        round(s$h, 5),
+        ")...",
+        appendLF = FALSE
+      )
     }
 
     fatal <- FALSE
@@ -402,7 +466,7 @@ fit_strategy_final <- function(
         withCallingHandlers(
           {
             locfit(
-              ~ lp(V1, V2, nn = s$nn, deg = s$deg),
+              ~ lp(V1, V2, nn = s$nn, h = s$h, deg = s$deg), # <-- h goes inside lp()
               data = data,
               weights = data$w,
               kern = s$kern,
@@ -432,12 +496,12 @@ fit_strategy_final <- function(
 
     if (!fatal && validate(fit)) {
       if (verbose) {
-        message(" \u2713") # Checkmark
+        message(" \u2713")
       }
       return(fit)
     } else {
       if (verbose) {
-        message(" \u2717") # X mark
+        message(" \u2717")
       }
     }
   }

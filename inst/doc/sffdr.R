@@ -57,6 +57,23 @@ fpi0 <- fpi0est(p, mpi0, indep_snps = indep_snps)
 sffdr_out <- sffdr(p, fpi0 = fpi0$fpi0)
 
 ## ----eval = FALSE-------------------------------------------------------------
+# sffdr_out <- sffdr(p, fpi0 = fpi0$fpi0, monotone = TRUE)
+
+## ----eval = FALSE-------------------------------------------------------------
+# # Create an artificial LD block
+# LD_block <- 500:1000
+# p[LD_block] <- runif(length(LD_block), min = 0.78, max = 0.82)
+# 
+# # Define weights (inverse LD)
+# w <- rep(1.0, length(p))
+# w[LD_block] <- 0.05
+# 
+# # Apply sfFDR with weights
+# mpi0 <- pi0_model(z, weights = w)
+# fpi0 <- fpi0est(p, mpi0, weights = w)
+# sffdr_out <- sffdr(p, fpi0 = fpi0$fpi0, weights = w)
+
+## ----eval = FALSE-------------------------------------------------------------
 # # Create model (can include other variables (e.g., MAF) or specify more complicated models)
 # fmod <- "~ns(bfp, knots = c(0.01, 0.025, 0.05, 0.1))"
 # fpi0_mod <- fpi0est(p = p,
