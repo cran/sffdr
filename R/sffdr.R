@@ -22,7 +22,35 @@
 #' }
 #'
 #' Surrogate Variable:
-#' If not specified, the estimated functional pi0 is used as the surrogate variable.
+#' If not specified, the surrogate is the covariate of the functional pi0 model
+#' when it has one (\code{\link{fpi0est}} attaches it to its estimates), and the
+#' estimated functional pi0 otherwise: the pi0 compresses several covariates
+#' into one.
+#'
+#' Weights and LD:
+#' The joint density is estimated over all tested SNPs, which is the set the
+#' functional p-values count errors in, so \code{sffdr()} no longer reweights
+#' it. Inverse-LD weights change the density to that of independent signals;
+#' because associated SNPs have larger LD scores, this biases the local FDR
+#' (conservative with inverse-LD weights, anti-conservative with weights that
+#' are larger at associated SNPs). LD scores carry information about
+#' association, so their place is the functional pi0 model, as a covariate
+#' (see the vignette); as inverse weights they remain available in
+#' \code{\link{pi0_model}} and \code{\link{fpi0est}} in place of an LD-pruned
+#' training set.
+#'
+#' Perfect-LD copies:
+#' SNPs with identical p-values are copies of one signal (perfect LD). Each
+#' set of copies contributes one point to the density fit, and the density is
+#' then evaluated for every SNP, so copies do not narrow the effective window
+#' in the tail (which inflated functional p-values below 1e-3 before 1.1.4).
+#' Rounded p-values tie between unrelated SNPs too, almost only in the bulk
+#' of the distribution where values are dense per significant digit, and
+#' collapsing those would distort the density; so identical p-values count as
+#' copies only when they are at least half as common below p = 0.023 as above
+#' it, which holds for LD copies and fails for rounding. The window itself
+#' spans about 5,000 of the rows the density is fitted on; see
+#' \code{\link{kernelEstimator}}.
 #'
 #' Interpretation note: Functional p-values reflect the global ranking of all
 #' SNPs by the functional local FDR. A SNP with a small functional p-value but
@@ -32,36 +60,82 @@
 #' when assessing individual SNP evidence. SNPs with flfdr > 0.5 should
 #' be interpreted cautiously regardless of their functional p-value.
 #'
-#' @param p.value Numeric vector of p-values to analyze.
+#' Cross-fitting: when the number of effective tests is much smaller than the
+#' number of SNPs (e.g., imputed data), set \code{folds} to the chromosome
+#' labels to obtain calibrated functional p-values from leave-one-chromosome-out
+#' fits (cross-fitting as in Liley and Wallace, 2021); \code{nfolds}
+#' groups the chromosomes into fewer folds. Each fold refits the density's
+#' tail (p < 0.1), where a fold's own SNPs move the fit; the bulk above it is
+#' one fit on every SNP. Without an LD-pruned set for the pi0 model, estimate
+#' pi0 in the same folds (\code{fpi0est(folds = )}): each fold is then scored
+#' with the pi0 model fitted without it, which gives every SNP its pi0 and,
+#' unless \code{surrogate} is given, its surrogate rank (the tail is refitted
+#' on those ranks, the bulk is one fit on the global model's). A SNP beyond
+#' the smallest p-value of the other folds, where the fit has no data, is
+#' ranked by its own p-value:
+#' its bin's local FDR at that edge, falling in proportion to p.
+#'
+#' @param p.value Numeric vector of p-values to analyze, in [0, 1]. Exact
+#'   zeros are clamped to the smallest positive double with a warning;
+#'   negative values are an error.
 #' @param fpi0 Numeric vector of functional pi0 estimates, obtained
-#'   from \code{\link{fpi0est}}. Values must be in [0, 1].
+#'   from \code{\link{fpi0est}}. Values must be in [0, 1]. From
+#'   \code{fpi0est(folds = )} it carries the fold models, which the
+#'   cross-fitting uses (give the same \code{folds} and \code{nfolds}).
 #' @param surrogate Optional numeric vector (same length as \code{p.value}) used
-#'   as a surrogate variable for compression. If NULL (default), uses
-#'   \code{fpi0} as the surrogate.
-#' @param weights Optional numeric vector of weights for density estimation. For GWAS data, this should be inverse LD scores.
+#'   as a surrogate variable for compression. If NULL (default), the pi0
+#'   model's covariate when it has one, else \code{fpi0} (with pi0 estimated
+#'   in folds, each fold's model's pi0). With \code{folds}, a surrogate given
+#'   here is used in every fold, so it must not be fitted on the p-values.
+#' @param weights Ignored, with a warning (kept for compatibility with sffdr
+#'   1.1.2); see Details.
 #' @param epsilon Numeric; lower bound for p-value clamping during density estimation.
 #'   Default is \code{.Machine$double.xmin}.
-#' @param nn Numeric; nearest-neighbor bandwidth for \code{\link{kernelEstimator}}.
-#'   If NULL (default), automatically selected as ~5000 neighbors.
+#' @param nn Numeric; nearest-neighbor bandwidth for \code{\link{kernelEstimator}},
+#'   a fraction of the rows the density is fitted on. If NULL (default), the
+#'   window spans ~5000 of those rows. With \code{folds}, \code{"cv"} chooses
+#'   among 1/4, 1/2, 1, 2 and 4 times that window by the held-out
+#'   log-likelihood of the tail (p < 0.023) on the left-out folds, kept as the
+#'   attribute \code{"nn"} of the result.
 #' @param monotone Logical; if TRUE, enforces monotonicity of the estimated density with respect to p-values within bins of the surrogate variable. Default is TRUE.
 #' @param monotone_method Character; method for enforcing monotonicity. Options are "min" (running minimum) or "pava" (Pool Adjacent Violators Algorithm). Default is "min".
 #'   We do not recommend "pava" for GWAS data sets due to LD, but it may be better for expression data.
 #' @param fp_ties Logical; whether to break ties in functional p-values using the
 #'   original p-value ordering. Default is TRUE.
-#' @param seed Integer; random seed for reproducibility of rank tie-breaking.
-#'   Default is 2026.
+#' @param seed Integer; random seed for reproducibility of rank tie-breaking,
+#'   the jitter and the null downsampling in the density fit. Default is 2026.
+#' @param keep_fit Logical; if TRUE, the fitted density surface and the
+#'   surrogate bins are kept in the result (element \code{fit}). Default is
+#'   FALSE; it does not change any other element of the result.
+#' @param folds Optional vector of fold labels (e.g., chromosomes), one per SNP.
+#'   If given, the density's tail (p < 0.1) is refitted leave-one-fold-out and
+#'   each SNP is scored on the fit that did not see its fold; \code{fpvalues} are then calibrated
+#'   when the number of effective tests is much smaller than the number of
+#'   SNPs. Default is NULL (no cross-fitting; output identical to earlier
+#'   versions).
+#' @param nfolds Optional integer; with \code{folds}, the number of folds to
+#'   use: the labels are grouped into \code{nfolds} folds of similar size,
+#'   whole labels (chromosomes) kept together. Default is NULL (one fold per
+#'   label).
+#' @param ncores Integer; number of cores for fitting folds in parallel
+#'   (\code{parallel::mclapply}; not on Windows). Default is 1.
 #' @param verbose Logical; print progress messages. Default is TRUE.
 #' @param ... Additional arguments passed to \code{\link{kernelEstimator}}.
 #'
 #' @return
 #' An S3 object of class \code{"sffdr"} containing:
 #' \item{call}{The function call.}
-#' \item{pvalues}{Original p-values.}
+#' \item{pvalues}{The p-values as analysed (exact zeros clamped).}
 #' \item{fpvalues}{Functional p-values.}
 #' \item{fqvalues}{Functional q-values.}
 #' \item{flfdr}{Functional local false discovery rates.}
 #' \item{fpi0}{Functional pi0 estimates.}
 #' \item{fx}{Joint density estimates at observed (p-value, surrogate) pairs.}
+#' \item{fit}{With \code{keep_fit = TRUE}: the fitted surface (the locfit
+#'   object), the surrogate ranks, their bins and the inputs.}
+#' \item{folds}{The fold labels used, if given (\code{fpvalues},
+#'   \code{fqvalues}, \code{flfdr} and \code{fx} are then the cross-fitted
+#'   values).}
 #'
 #' @examples
 #' \dontrun{
@@ -91,6 +165,10 @@
 #' fp <- sffdr_out$fpvalues
 #' fq <- sffdr_out$fqvalues
 #' flfdr <- sffdr_out$flfdr
+#'
+#' # Cross-fit by chromosome (recommended for imputed data); nfolds = 5 groups
+#' # the chromosomes into five folds
+#' sffdr_cv <- sffdr(p, fpi0, folds = chr)
 #' }
 #'
 #' @author Andrew J. Bass
@@ -109,6 +187,10 @@ sffdr <- function(
   monotone_method = c("min", "pava"),
   fp_ties = TRUE,
   seed = 2026,
+  keep_fit = FALSE,
+  folds = NULL,
+  nfolds = NULL,
+  ncores = 1L,
   verbose = TRUE,
   ...
 ) {
@@ -146,17 +228,31 @@ sffdr <- function(
     stop("Length of 'surrogate' must match 'p.value'.")
   }
 
-  if (any(p.value <= 0, na.rm = TRUE)) {
-    warning("Found p-values <= 0. Clamping to machine epsilon.")
-    p.value <- pmax(p.value, .Machine$double.xmin, na.rm = FALSE)
+  if (any(p.value < 0, na.rm = TRUE)) {
+    stop("Found p-values < 0: 'p.value' must hold p-values, not log p-values.")
   }
 
   if (any(p.value > 1, na.rm = TRUE)) {
     stop("Found p-values > 1.")
   }
 
+  if (any(p.value == 0, na.rm = TRUE)) {
+    warning("Found p-values equal to 0. Clamping to the smallest positive double.")
+    p.value <- pmax(p.value, .Machine$double.xmin, na.rm = FALSE)
+  }
+
   if (any(fpi0 < 0 | fpi0 > 1, na.rm = TRUE)) {
     stop("'fpi0' values must be in [0, 1].")
+  }
+
+  # From fpi0est(): the fold models, and the surrogate for one covariate
+  pi0_folds <- attr(fpi0, "pi0_folds")
+  if (is.null(surrogate)) surrogate <- attr(fpi0, "surrogate")
+  attr(fpi0, "pi0_folds") <- NULL
+  attr(fpi0, "surrogate") <- NULL
+
+  if (identical(nn, "cv") && is.null(folds)) {
+    stop("nn = \"cv\" needs 'folds'.")
   }
 
   # Handle NAs: identify valid indices, compute on valid subset, map back
@@ -174,20 +270,12 @@ sffdr <- function(
   fpi0_valid <- fpi0[valid]
   n_valid <- sum(valid)
 
-  # Handle inverse LD weights for density estimation
-  w_valid <- if (!is.null(weights)) weights[valid] else NULL
-
-  if (!is.null(w_valid)) {
-    w_valid <- pmin(pmax(w_valid, 1e-6), 1.0)
-  }
-
-  has_weights <- !is.null(w_valid) && !all(is.na(w_valid))
-
-  if (has_weights && any(is.na(w_valid)) && verbose) {
-    message(sprintf(
-      "  Note: Weights missing for %.1f%% of SNPs. Training map on weighted subset...",
-      100 * mean(is.na(w_valid))
-    ))
+  # Weights no longer enter the density: it is estimated over all tested SNPs
+  if (!is.null(weights)) {
+    warning(
+      "sffdr: 'weights' are ignored; the density is estimated over all tested SNPs. ",
+      "Use 'weights' in pi0_model() and fpi0est(), or include the LD score as a covariate."
+    )
   }
 
   # Set surrogate variable
@@ -197,54 +285,58 @@ sffdr <- function(
 
   surrogate_var <- if (is.null(surrogate)) fpi0_valid else surrogate[valid]
 
+  # Cross-fit by fold (Liley and Wallace 2021)
+  if (!is.null(folds)) {
+    if (length(folds) != n) stop("'folds' must have one label per SNP.")
+    if (!is.null(nfolds)) folds <- .group_folds(folds, nfolds)
+    if (!is.null(pi0_folds) && !identical(as.vector(pi0_folds$labels), as.vector(folds))) {
+      stop("'fpi0' was estimated in other folds: give sffdr() the 'folds' and 'nfolds' given to fpi0est().")
+    }
+    if (verbose) message("  Cross-fitting by fold...")
+    sv <- NULL
+    if (is.null(pi0_folds) || !is.null(surrogate)) { sv <- rep(NA_real_, n); sv[valid] <- surrogate_var }   # else each fold's pi0
+    nn_cv <- if (identical(nn, "cv")) .cv_nn(p.value, fpi0, sv, folds, ncores = ncores, seed = seed, epsilon = epsilon, verbose = verbose,
+                                             pi0_folds = pi0_folds, ...)
+    cv <- .sffdr_cross(p.value, fpi0, sv, folds, ncores = ncores, verbose = verbose, seed = seed, nn = if (is.null(nn_cv)) nn else nn_cv, epsilon = epsilon,
+                       pi0_folds = pi0_folds, ...)
+    cv <- .merge_folds(list(cv), p.value, fp_ties = fp_ties)
+    if (verbose) { message("  Done."); message("==================================================") }
+    return(structure(list(call = match.call(), pvalues = p.value, fpvalues = cv$fpvalues, fqvalues = cv$fqvalues,
+                          flfdr = cv$flfdr, fpi0 = fpi0, fx = cv$fx, folds = folds), class = "sffdr", nn = nn_cv))
+  }
+
   # Rank-transform surrogate to percentile scale
   z <- rank(surrogate_var, ties.method = "random") / n_valid
+
+  # Perfect-LD copies (SNPs with identical p-values) carry one point each in
+  # the density fit; the density is then evaluated for every SNP. Ties that
+  # come from rounded p-values are left alone (see .ld_copies).
+  copies <- .ld_copies(p_valid)
+  if (verbose && any(copies)) {
+    message(sprintf(
+      "  %d SNPs share their p-value with another SNP (%d below p = 0.023); the density is fitted on %d distinct rows...",
+      sum(copies),
+      sum(copies & p_valid < pnorm(-2)),
+      n_valid - sum(copies)
+    ))
+  }
 
   # Fit joint density
   if (verbose) {
     message("  Fitting kernel density...")
   }
 
-  if (has_weights) {
-    # Weighted density estimation
-    train_idx <- !is.na(w_valid)
-    kd <- kernelEstimator(
-      x = cbind(z[train_idx], p_valid[train_idx]),
-      eval.points = cbind(z, p_valid), # Predict for ALL valid SNPs
-      nn = nn,
-      epsilon = epsilon,
-      weights = w_valid[train_idx],
-      verbose = verbose,
-      ...
-    )
-
-    # Marginal density of Z (1D weighted correction)
-    fx_uni <- kernelEstimator(
-      x = z[train_idx],
-      eval.points = z,
-      nn = nn,
-      epsilon = epsilon,
-      weights = w_valid[train_idx],
-      verbose = verbose,
-      ...
-    )
-
-    fx_valid <- pmax(kd$fx, .Machine$double.xmin)
-    marginal_fz <- pmax(fx_uni$fx, .Machine$double.xmin)
-  } else {
-    # Unweighted density estimation
-    kd <- kernelEstimator(
-      x = cbind(z, p_valid),
-      eval.points = cbind(z, p_valid),
-      nn = nn,
-      epsilon = epsilon,
-      weights = NULL,
-      verbose = verbose,
-      ...
-    )
-    fx_valid <- pmax(kd$fx, .Machine$double.xmin)
-    marginal_fz <- 1
-  }
+  xp <- cbind(z, p_valid)
+  kd <- kernelEstimator(
+    x = if (any(copies)) xp[!copies, , drop = FALSE] else xp,
+    eval.points = xp,
+    nn = nn,
+    epsilon = epsilon,
+    weights = NULL,
+    verbose = verbose,
+    ...
+  )
+  fx_valid <- pmax(kd$fx, .Machine$double.xmin)
 
   if (monotone) {
     if (verbose) {
@@ -255,11 +347,8 @@ sffdr <- function(
       message(msg)
     }
 
-    # Calculate Effective N (accounting for LD weights)
-    eff_n <- if (!is.null(weights)) sum(w_valid, na.rm = TRUE) else n_valid
-
-    # Target ~1,000 independent SNPs per bin
-    n_bins <- as.integer(max(10, min(1000, floor(eff_n / 1000))))
+    # Target ~1,000 SNPs per bin
+    n_bins <- as.integer(max(10, min(1000, floor(n_valid / 1000))))
 
     if (verbose) {
       message(sprintf(
@@ -295,7 +384,7 @@ sffdr <- function(
     message("  Computing functional local FDRs...")
   }
 
-  lfdr_valid <- pmin(fpi0_valid * marginal_fz / fx_valid, 1)
+  lfdr_valid <- pmin(fpi0_valid / fx_valid, 1)
 
   # Compute functional p-values and q-values
   if (verbose) {
@@ -326,18 +415,60 @@ sffdr <- function(
   fx_out[valid] <- fx_valid
 
   # Return results
-  structure(
-    list(
-      call = match.call(),
-      pvalues = p.value,
-      fpvalues = fpvalues_out,
-      fqvalues = fqvalues_out,
-      flfdr = flfdr_out,
-      fpi0 = fpi0,
-      fx = fx_out
-    ),
-    class = "sffdr"
+  out <- list(
+    call = match.call(),
+    pvalues = p.value,
+    fpvalues = fpvalues_out,
+    fqvalues = fqvalues_out,
+    flfdr = flfdr_out,
+    fpi0 = fpi0,
+    fx = fx_out
   )
+
+  # The fitted surface and the surrogate bins (keep_fit)
+  if (keep_fit) {
+    if (!monotone) {
+      n_bins <- as.integer(max(10, min(1000, floor(n_valid / 1000))))
+      groups <- as.integer(cut(z, breaks = n_bins, labels = FALSE))
+    }
+    out$fit <- list(
+      lfit = attr(kd, "lfit"),
+      z = z,
+      groups = groups,
+      n_bins = n_bins,
+      p = p_valid,
+      fpi0 = fpi0_valid,
+      surrogate = surrogate_var,
+      fx = fx_valid,
+      lfdr = lfdr_valid,
+      valid = valid
+    )
+  }
+
+  structure(out, class = "sffdr")
+}
+
+## SNPs whose p-value is shared with an earlier SNP: perfect-LD copies, which
+## tie as often in the tail (p < 0.023, the rows the density is fitted on
+## without downsampling) as in the bulk. Rounded p-values tie between
+## unrelated SNPs, almost only in the bulk where values are dense per digit;
+## collapsing those would move mass out of the bulk and onto other SNPs'
+## surrogate values, so when ties are less than half as common in the tail as
+## in the bulk nothing is collapsed.
+.ld_copies <- function(p) {
+  dup <- duplicated(p)
+  if (!any(dup)) {
+    return(dup)
+  }
+  tied <- dup | duplicated(p, fromLast = TRUE)
+  tail <- p < pnorm(-2)
+  if (sum(tied & tail) < 20 || sum(tied) > 20 * sum(tied & !dup)) {
+    return(rep(FALSE, length(p)))                     # nothing to gain / coarse rounding
+  }
+  if (sum(!tail) >= 100 && mean(tied[tail]) < 0.5 * mean(tied[!tail])) {
+    return(rep(FALSE, length(p)))                     # ties by rounding
+  }
+  dup
 }
 
 #' @importFrom qvalue qvalue pi0est

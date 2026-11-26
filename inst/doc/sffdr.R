@@ -43,35 +43,40 @@ results <- data.frame(
 # Plot significance results (focusing on high-significance SNPs)
 plot(sffdr_out, rng = c(0, 1e-6))
 
-## -----------------------------------------------------------------------------
-# logical vector: TRUE if SNP is LD-independent
-# (In this example, all SNPs are already independent)
-indep_snps <- rep(TRUE, length(p))
-
-# Fit model using LD-independent subset
-mpi0 <- pi0_model(z = z, indep_snps = indep_snps)
-
-fpi0 <- fpi0est(p, mpi0, indep_snps = indep_snps)
-
-# Estimate quantities for all SNPs
-sffdr_out <- sffdr(p, fpi0 = fpi0$fpi0)
+## ----eval = FALSE-------------------------------------------------------------
+# # Fit model using LD-independent subset (indep_snps: TRUE if SNP is LD-independent)
+# mpi0 <- pi0_model(z = z, indep_snps = indep_snps)
+# fpi0 <- fpi0est(p, mpi0, indep_snps = indep_snps)
+# 
+# # Recommended: cross-fit by chromosome (chr: the chromosome of each SNP)
+# sffdr_out <- sffdr(p, fpi0 = fpi0$fpi0, folds = chr, nfolds = 5)
+# 
+# # Without LD-independent SNPs (slower): pi0 is estimated in the same folds
+# fpi0 <- fpi0est(p, pi0_model(z = z), folds = chr, nfolds = 5)
+# sffdr_out <- sffdr(p, fpi0 = fpi0$fpi0, folds = chr, nfolds = 5)
 
 ## ----eval = FALSE-------------------------------------------------------------
-# sffdr_out <- sffdr(p, fpi0 = fpi0$fpi0, monotone = TRUE)
+# # LD score (log scale) added to the pi0 model built by pi0_model()
+# zt <- cbind(mpi0$zt, ld = log(ld_score))
+# fmod <- update(mpi0$fmod, ~ . + ns(ld, df = 3))
+# fpi0 <- fpi0est(p, z = zt, pi0_model = fmod, indep_snps = indep_snps)
+# sffdr_out <- sffdr(p, fpi0 = fpi0$fpi0, folds = chr, nfolds = 5)
 
 ## ----eval = FALSE-------------------------------------------------------------
-# # Create an artificial LD block
-# LD_block <- 500:1000
-# p[LD_block] <- runif(length(LD_block), min = 0.78, max = 0.82)
-# 
-# # Define weights (inverse LD)
-# w <- rep(1.0, length(p))
-# w[LD_block] <- 0.05
-# 
-# # Apply sfFDR with weights
+# w <- 1 / ld_score
 # mpi0 <- pi0_model(z, weights = w)
 # fpi0 <- fpi0est(p, mpi0, weights = w)
-# sffdr_out <- sffdr(p, fpi0 = fpi0$fpi0, weights = w)
+# sffdr_out <- sffdr(p, fpi0 = fpi0$fpi0, folds = chr, nfolds = 5)
+
+## ----eval = FALSE-------------------------------------------------------------
+# mpi0 <- pi0_model_echisq(echisq, indep_snps = indep_snps)
+# fpi0 <- fpi0est(p, mpi0, indep_snps = indep_snps)
+# sffdr_out <- sffdr(p, fpi0 = fpi0$fpi0, surrogate = echisq, folds = chr, nfolds = 5)
+
+## ----eval = FALSE-------------------------------------------------------------
+# mpi0 <- pi0_model_echisq(cbind(echisq = echisq, ld = ld_score), indep_snps = indep_snps)
+# fpi0 <- fpi0est(p, mpi0, indep_snps = indep_snps)
+# sffdr_out <- sffdr(p, fpi0 = fpi0$fpi0, folds = chr, nfolds = 5)
 
 ## ----eval = FALSE-------------------------------------------------------------
 # # Create model (can include other variables (e.g., MAF) or specify more complicated models)

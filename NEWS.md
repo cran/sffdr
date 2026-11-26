@@ -1,4 +1,170 @@
-# sffdr (development version)
+# sffdr 1.2.5
+
+* `sffdr(folds = )` continues each fold's ranking below its smallest training
+  p (e) as the density ratio at e times e / p. Where the grid of p reaches the
+  smallest double (p near 1e-308, |z| above 37.5) the ratio can pass the
+  largest double, and the local FDR read off the curve between such a grid
+  point and a finite one was NaN. Those SNPs are now read with the curve held
+  at the largest double. Every value that was a number is unchanged.
+
+# sffdr 1.2.4
+
+* `sffdr(folds = )` refits only the density's tail (p < 0.1) in each fold, on
+  the same rows and window. The bulk above it is one fit on every SNP. On one
+  core, leave-one-chromosome-out takes 51 s against 138 s at 1M SNPs and 7
+  against 12 minutes at 10M, and `nfolds = 5` 16 against 34 s and 2 against 4
+  minutes, with the same calls at 5e-8 and the same calibration from 1e-4 to
+  0.1 in null, sparse and polygenic simulations. A SNP's functional p-value
+  moves by less than a change of `seed` moves it.
+* `fpi0est(folds = , nfolds = )` estimates the functional pi0 by fold, for data
+  without an LD-independent training set: lambda is chosen once on all SNPs and
+  the model refitted at it on the other folds. The estimates carry the fold
+  models, and `sffdr()` with the same folds gives every SNP each fold's pi0
+  (and surrogate rank) when it scores that fold, so no SNP's pi0 or surrogate
+  uses its own p-value. In simulation, a 2,000-SNP null LD block at p ~ 6e-5
+  outside the enriched region put 1,442-1,799 of its SNPs at functional
+  p <= 1e-4 under one pi0 fit on all SNPs (1,371-1,393 by their p-values), and
+  3-241 under the fold models.
+* When the functional pi0 model has one covariate, that covariate is the
+  default surrogate (`fpi0est()` attaches it to its estimates): the pi0
+  compresses several covariates into one, and stays the surrogate for those.
+  This changes the results of analyses with one covariate (in simulation, the
+  same or more calls at 5e-8: 55 against 52 per genome with 50-SNP LD blocks).
+  `surrogate = fpi0` gives the earlier default.
+* `fpi0est()`'s default `maxit` is 60 (was 200). fastglm caps its step
+  halvings at `maxit`, and at the pi0 = 1 boundary it halved each lambda fit's
+  last step 200 times. The fits converge in 4-18 iterations, and the estimates
+  are identical to the bit in eight simulated genomes (no signal, and 0.2% or
+  1.5% of LD blocks associated), at 2.4-3 times the speed (1M SNPs: 90 s
+  against 225 s).
+* `fpi0est()` holds one lambda fit at a time (the best so far) in place of all
+  19, and the returned model no longer keeps the function's frame, which held
+  every fit. On 1M SNPs the peak memory is 0.9 against 2.2 GB and the returned
+  object 69 against 1,564 MB, in the same time and with the same estimates.
+* The vignette and README recommend cross-fitting the density by chromosome
+  (`folds = chr, nfolds = 5`) for GWAS, with pi0 in the same folds when there
+  is no pruned set. This supersedes `sffdr()` without `folds`.
+* Progress bars (`verbose = TRUE`) show the time left, for the lambda fits and
+  the folds.
+* The functional p-value's sums over the surrogate bins run in C++ (the same
+  values, to the bit).
+
+# sffdr 1.2.3
+
+* `sffdr(folds = , nn = "cv")` chooses the density's bandwidth by
+  cross-validation: among 1/4 to 4 times the default window, the one with the
+  highest held-out log-likelihood of the tail SNPs (p < 0.023) on the left-out
+  folds. The default (`nn = NULL`) is unchanged.
+
+# sffdr 1.2.2
+
+* `sffdr(folds = )` ranks a SNP beyond the other folds' smallest p-value by its
+  own p-value (its bin's local FDR at that edge, falling in proportion to p) in
+  place of the density's extrapolation, so a locus alone on its chromosome is
+  no longer lost (200 of 200 locus SNPs at 5e-8 over 10 genomes, against 133).
+  Every other functional p-value moves by at most that p-value (to within the
+  grid cell holding it). `flfdr` and `fqvalues` are unchanged.
+
+# sffdr 1.2.1
+
+* `sffdr(folds = )` credits the range below the smallest p-value only in the
+  fold that holds it. In the other folds it is a training SNP and the
+  functional p-value is exact without the credit. More calls in weak scans with
+  an informative surrogate (28 vs 26 at 5e-8 over 10 genomes), none fewer in
+  any design.
+
+# sffdr 1.2.0
+
+* `sffdr(folds = chr)` cross-fits the density leave-one-chromosome-out
+  (Liley and Wallace, 2021): calibrated functional p-values when the number
+  of effective tests is much smaller than the number of SNPs (e.g., imputed
+  data). `nfolds` groups the chromosomes into fewer folds and `ncores` fits
+  folds in parallel. Without `folds` the output is identical to 1.1.4.
+* `sffdr(keep_fit = TRUE)` keeps the fitted density surface.
+* New `pi0_model_echisq()`: the fpi0 model for an expected chi-squared
+  covariate (a per-SNP prediction of E[chi^2] from annotations, as in Bass et
+  al. 2026), the companion of `pi0_model()` for a covariate whose signal is at
+  the top and whose null value is known. A natural spline in the rank of the
+  covariate with one knot anchored at the rank of `null_value` (1 by default)
+  and the remaining knots at fixed upper quantiles, pruned until every bin
+  holds `min_snps_per_knot` independent SNPs (or that much weight). Its output
+  goes to `fpi0est()` as `pi0_model_obj`, and the covariate is the natural
+  `surrogate` of `sffdr()`. Annotations (e.g., the LD score) can be included
+  as further columns, each with its own spline, anchored only when the null
+  value lies in its range. Reproduces the manuscript's `pi0_model_anchor()`.
+
+# sffdr 1.1.4
+
+* The density window in `sffdr()` now spans the documented ~5,000 neighbours.
+  `nn` was taken as a fraction of all SNPs but applied to the rows the density
+  is fitted on (the tail plus 100,000 downsampled null SNPs), which left about
+  600 neighbours at one million SNPs. Results at up to ~100,000 SNPs are
+  unchanged; above that, calls at fq <= 0.05 move by up to 2% (fewer at one
+  million SNPs) at the same ranking and the same type I error with independent
+  SNPs.
+* Perfect-LD copies (SNPs with identical p-values) now contribute one point
+  each to the density fit, with the density evaluated for every SNP. With many
+  copies the narrow window inflated functional p-values below 1e-3 by up to
+  2.4-fold at one million SNPs; it is now within the level of the same number
+  of independent SNPs. Ties from rounded p-values, which sit almost only in
+  the bulk of the distribution, are recognised by that and left alone.
+* `fpvalues()` gives tests with identical `lfdr` and `p` the same values (the
+  set's), so the result no longer depends on the input order; negative `lfdr`
+  is an error and all-zero `lfdr` gives functional p-values of 0 instead of NaN.
+* `kernelEstimator()` no longer crashes R on tied or near-tied values in the
+  univariate case (tied values are collapsed, the fit uses at most 20
+  iterations and at least 10 distinct neighbours). Its `maxk` default is 5,000
+  instead of 500,000 (35 MB instead of 2.7 GB of evaluation space), and the fit
+  is repeated with more space if locfit runs out; the fit is unchanged. `...`
+  is passed to `locfit()`, as it always was, and the arguments set by the
+  estimator cannot be passed through it. The error after a failed cascade
+  reports locfit's last message.
+* `pi0_model()` and `fpi0est()` accept `indep_snps` as a logical vector, row
+  indices or SNP ids (row names). Row indices were summed as if logical in
+  `pi0_model()` (far too many SNPs per knot) and were recycled in `fpi0est()`.
+* `pi0_model()` stops on non-numeric input (an rsID column was ranked as text
+  and modelled) and warns when a column is not a p-value column or `qvalue()`
+  fails, instead of silently using the fallback knot.
+* `fpi0est()` checks the lengths of `p`, `weights` and `indep_snps`, requires
+  `lambda` in (0, 1), warns when the chosen model did not converge and when
+  weights above 1 are clamped (LD scores passed in place of inverse LD scores
+  gave an unweighted fit). Tests with a missing p-value or covariate get
+  fpi0 = 1 and the floor of 0.01 are documented. `tableLambda` no longer holds
+  the 19 fitted models (~1 GB per million SNPs); the chosen model is returned
+  as `model`.
+* `sffdr()` stops on negative p-values (a log10 p-value column became the
+  strongest discovery) and clamps exact zeros only.
+* `plot.sffdr()` showed the wrong SNPs' fpi0 in panel (a) when some p-values
+  were missing; also removed a duplicated scale and a deprecated legend
+  position.
+* The C++ smoothers check their input lengths and ordering.
+* Documentation: monotone smoothing has been the default since 1.1.2; the
+  bivariate `kernelEstimator()` takes the covariate first and the p-values
+  second (the example and tests had them swapped).
+* `tests/testthat.R` added, so `R CMD check` runs the test suite (it did not
+  before).
+
+# sffdr 1.1.3
+
+* `decorrelate_informative()` now removes the primary's noise from the
+  informative studies exactly, (z_y - rho z_x) / sqrt(1 - rho^2), instead of
+  scaling the correction by the primary's local FDR, which left part of the
+  overlap in the covariates and inflated false discoveries at larger overlap.
+  It takes several informative studies at once and, without `rho_o`, estimates
+  the overlap with the new `estimate_overlap()`. `p_x`, `p_y` and `lfdr_x` are
+  no longer used.
+* New `estimate_overlap()`: the null correlation of z-scores between studies
+  from their products near zero.
+* `overlap_null_density()`, `run_empirical_overlap_correction()`,
+  `estimate_rho_overlap()` and `discover_empirical_nulls()` are defunct.
+* `sffdr()` no longer uses `weights` (a warning is given). Its density is
+  estimated over all tested SNPs, the set the functional p-values count errors
+  in; reweighting it by inverse LD scores biased the local FDR, because
+  associated SNPs have larger LD scores (conservative with inverse-LD weights,
+  anti-conservative with weights larger at associated SNPs). LD scores belong
+  in the functional pi0 model as a covariate; inverse-LD weights remain
+  available in `pi0_model()` and `fpi0est()` in place of LD pruning. Results
+  without `weights` are unchanged.
 
 # sffdr 1.1.2
 

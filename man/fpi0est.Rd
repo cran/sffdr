@@ -14,9 +14,11 @@ fpi0est(
   lambda = seq(0.05, 0.95, 0.05),
   constrained.p = TRUE,
   tol = 1e-09,
-  maxit = 200,
+  maxit = 60,
   ncores = 1L,
   verbose = TRUE,
+  folds = NULL,
+  nfolds = NULL,
   ...
 )
 }
@@ -34,19 +36,23 @@ Required if \code{pi0_model_obj} is not provided. Default is NULL.}
 \item{pi0_model}{Optional formula (as character string or formula object).
 Required if \code{pi0_model_obj} is not provided. Default is NULL.}
 
-\item{indep_snps}{Optional logical vector indicating independent SNPs for
-model fitting. Default is NULL (all SNPs used).}
+\item{indep_snps}{Optional independent SNPs for model fitting: a logical
+vector with one entry per p-value, row indices, or SNP ids matched against
+\code{rownames(z)}. Default is NULL (all SNPs used).}
 
-\item{weights}{Optional numeric vector of weights for density estimation. For GWAS data, this should be inverse LD scores. If these are available
+\item{weights}{Optional numeric vector of weights in (0, 1], one per p-value,
+for the model fit. For GWAS data, this should be inverse LD scores (values
+above 1 are clamped to 1 with a warning). If these are available
 then you don't have to use the indep_snps argument, as the weights will effectively prioritize independent SNPs in the fitting process.}
 
-\item{lambda}{Numeric vector of lambda thresholds. Default is \code{seq(0.05, 0.95, 0.05)}.}
+\item{lambda}{Numeric vector of lambda thresholds in (0, 1). Default is \code{seq(0.05, 0.95, 0.05)}.}
 
 \item{constrained.p}{Logical; use constrained binomial family. Default is TRUE.}
 
 \item{tol}{Numeric; convergence tolerance. Default is 1e-9.}
 
-\item{maxit}{Integer; maximum iterations. Default is 200.}
+\item{maxit}{Integer; maximum iterations of each fit, which also caps
+fastglm's step halvings. Default is 60.}
 
 \item{ncores}{Integer; number of cores for parallel lambda fitting via
 \code{parallel::mclapply}. Fork-based parallelism (Unix/macOS only) -
@@ -54,15 +60,34 @@ on Windows this falls back to sequential execution. Default is 1L.}
 
 \item{verbose}{Logical; print progress messages. Default is TRUE.}
 
+\item{folds}{Optional vector of fold labels (e.g., chromosomes), one per
+p-value. If given, lambda is chosen once and each fold's pi0 comes from the
+model refitted on the other folds, so a SNP's pi0 does not use its own
+p-value or its LD neighbours'. The fold models are kept with the estimates,
+and \code{sffdr()} with the same \code{folds} and \code{nfolds} scores each
+fold with its own model. Recommended with \code{sffdr(folds = )} when no
+LD-independent set (\code{indep_snps}) is available. Default is NULL.}
+
+\item{nfolds}{Optional integer; with \code{folds}, the number of folds (the
+labels grouped as in \code{\link{sffdr}}). Default is NULL.}
+
 \item{...}{Additional arguments passed to \code{\link[fastglm]{fastglm}}.}
 }
 \value{
 An object of class \code{fpi0} (a list) containing:
 \describe{
-  \item{fpi0}{Numeric vector of functional pi0 estimates for each test.}
-  \item{tableLambda}{A data frame summarizing results for each lambda value.}
-  \item{MISE}{The Mean Integrated Squared Error (MISE) for the chosen model.}
+  \item{fpi0}{Numeric vector of functional pi0 estimates for each test,
+    floored at 0.01. Tests with a missing p-value or covariate get 1. With
+    \code{folds}, each test's estimate is from the model fitted without its
+    fold, and the fold models are the attribute \code{"pi0_folds"}. With
+    one covariate in the model, the covariate is the attribute
+    \code{"surrogate"}, \code{sffdr()}'s default surrogate.}
+  \item{tableLambda}{A data frame with one row per lambda value: the
+    MISE, the mean fitted pi0 and whether it was chosen.}
+  \item{MISE}{The Mean Integrated Squared Error (MISE) at each lambda.}
   \item{lambda}{The selected optimal lambda value.}
+  \item{model}{The fitted model at the selected lambda (class
+    \code{fastglm2}; \code{predict()} gives \eqn{P(p \ge \lambda | z)}).}
 }
 }
 \description{
